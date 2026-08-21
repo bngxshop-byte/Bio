@@ -11,39 +11,10 @@ from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
 import re
 import urllib.parse
-from google_play_scraper import app as ah
-import blackboxprotobuf
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = Flask(__name__)
-
-# ========== Global Variables ==========
-UA = "GarenaMSDK/4.0.32 (iPhone9,3;ios - 15.8.2;en-US;US;app v1.123.1 2019120273)"
-
-def get_version_info():
-    """الحصول على معلومات الإصدار من متجر اللعب"""
-    try:
-        data = ah("com.dts.freefireth", lang="fr", country="CA")
-        version = data["version"]
-        x = requests.get(
-            f"https://version.ggwhitehawk.com/live/ver.php"
-            f"?version={version}&lang=en&device=android&channel=android"
-            f"&appsttore=googleplay&region=en&whitelist_version=1.3.0"
-            f"&whitelist_sp_version=1.0.0&device_name=google%20G011A"
-            f"&device_CPU=ARMv7%20VFPv3%20NEON%20VMH"
-            f"&device_GPU=Adreno%20(TM)%20640&device_mem=1993"
-        ).json()
-        login_url = x.get("server_url")
-        ob = x.get("latest_release_version")
-        verr = x.get("remote_version")
-        host = login_url.split('https://')[1].split('/')[0]
-        return login_url, ob, verr, host
-    except Exception as e:
-        print(f"Error getting version info: {e}")
-        return "https://loginbp.ggblueshark.com", "OB54", "1.118.2", "loginbp.ggblueshark.com"
-
-LOGIN_URL, OB_VERSION, REMOTE_VERSION, HOST = get_version_info()
 
 # ========== Protobuf Definitions ==========
 _sym_db = _symbol_database.Default()
@@ -60,55 +31,21 @@ Data = _sym_db.GetSymbol('Data')
 EmptyMessage = _sym_db.GetSymbol('EmptyMessage')
 
 # ========== Helper Functions ==========
-
-def EncodeVarint(value):
-    """تشفير قيمة إلى Varint للـ Protobuf"""
-    result = []
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value:
-            byte |= 0x80
-        result.append(byte)
-        if not value:
-            break
-    return bytes(result)
-
-def BuildProto(fields):
-    """بناء رسالة Protobuf من قاموس"""
-    packet = bytearray()
-    for field, value in fields.items():
-        if isinstance(value, dict):
-            nested = BuildProto(value)
-            packet.extend(EncodeVarint((field << 3) | 2))
-            packet.extend(EncodeVarint(len(nested)))
-            packet.extend(nested)
-        elif isinstance(value, int):
-            packet.extend(EncodeVarint(field << 3))
-            packet.extend(EncodeVarint(value))
-        elif isinstance(value, str):
-            data = value.encode()
-            packet.extend(EncodeVarint((field << 3) | 2))
-            packet.extend(EncodeVarint(len(data)))
-            packet.extend(data)
-        elif isinstance(value, bytes):
-            packet.extend(EncodeVarint((field << 3) | 2))
-            packet.extend(EncodeVarint(len(value)))
-            packet.extend(value)
-    return bytes(packet)
-
-def ParseProto(data):
-    """تحليل رسالة Protobuf"""
-    return blackboxprotobuf.decode_message(data)[0]
-
 def remove_color_tags(text):
     """إزالة علامات الألوان من النص"""
     if not text:
         return text
     
+    # إزالة علامات الألوان السداسية [FFFFFF]
     text = re.sub(r'\[[a-fA-F0-9]{6}\]', '', text)
+    
+    # إزالة علامات الإغلاق [/b] [/i] إلخ
     text = re.sub(r'\[\/[a-z]\]', '', text)
+    
+    # إزالة علامات التنسيق [b] [i] [c] إلخ
     text = re.sub(r'\[[a-z]\]', '', text)
+    
+    # إزالة المسافات الكورية (ㅤ) إذا كانت تعتبر أحرفًا
     text = text.replace('ㅤ', ' ')
     
     return text.strip()
@@ -126,179 +63,136 @@ def validate_bio_length(bio):
         'color_tags_count': raw_length - clean_length
     }
 
-def encrypt_update(data_bytes):
-    """تشفير بيانات التحديث باستخدام AES-CBC"""
+def encrypt_api(plain_text):
+    """تشفير البيانات باستخدام AES-CBC"""
+    plain_text = bytes.fromhex(plain_text)
     key = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
     iv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
     cipher = AES.new(key, AES.MODE_CBC, iv)
-    encrypted_data = cipher.encrypt(pad(data_bytes, AES.block_size))
-    return encrypted_data
+    cipher_text = cipher.encrypt(pad(plain_text, AES.block_size))
+    return cipher_text.hex()
 
-# ========== Token Functions (NEW METHOD) ==========
-
-def GetToken(uid, pwd):
-    """جلب التوكن من Garena باستخدام الطريقة الجديدة"""
-    url = "https://100067.connect.garena.com/api/v2/oauth/guest/token:grant"
-    payload = {
-        "source": 1,
-        "password": pwd,
-        "uid": int(uid),
-        "response_type": "token",
-        "client_type": 1,
-        "client_secret": "2ee44819e9b4598845141067b281621874d0d5d7af9d8f7e00c1e54715b7d1e3",
-        "client_id": "100067"
-    }
-    headers = {
-        "User-Agent": UA,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-    r = requests.post(url, data=json.dumps(payload), headers=headers, timeout=10)
-    return r.json()
-
-def EncodePyl(data):
-    """تشفير البيانات باستخدام AES-CBC"""
-    KEY = b'Yg&tc%DEuh6%Zc^8'
-    IV = b'6oyZDr22E3ychjM%'
-    return AES.new(KEY, AES.MODE_CBC, IV).encrypt(pad(data, AES.block_size))
-
-def BuildLogin(open_id, access_token):
-    """بناء رسالة Protobuf للتسجيل"""
-    payload = {
-        3: str(datetime.now())[:-7],
-        4: "free fire",
-        5: 2,
-        7: REMOTE_VERSION,
-        8: "Android OS 9 / API-28 (PQ3B.190801.10101846/G9650ZHU2ARC6)",
-        9: "Handheld",
-        10: "Verizon",
-        11: "WIFI",
-        12: 1920,
-        13: 1080,
-        14: "280",
-        15: "ARM64 FP ASIMD AES VMH | 2865 | 4",
-        16: 3003,
-        17: "Adreno (TM) 640",
-        18: "OpenGL ES 3.1 v1.46",
-        19: "Google|34a7dcdf-a7d5-4cb6-8d7e-3b0e448a0c57",
-        20: "223.191.51.89",
-        21: "ar",
-        22: open_id,
-        23: "3",
-        24: "Handheld",
-        25: "iPhone10,1",
-        29: access_token,
-        30: 1,
-        41: "Verizon",
-        42: "WIFI",
-        57: "7428b253defc164018c604a1ebbfebdf",
-        60: 36235,
-        61: 31335,
-        62: 2519,
-        63: 703,
-        64: 25010,
-        65: 26628,
-        66: 32992,
-        67: 36235,
-        70: 1,
-        73: 1,
-        74: "/data/app/com.dts.freefireth-YPKM8jHEwAJlhpmhDhv5MQ==/lib/arm64",
-        76: 1,
-        77: "5b892aaabd688e571f688053118a162b|/data/app/com.dts.freefireth-YPKM8jHEwAJlhpmhDhv5MQ==/base.apk",
-        78: 2,
-        79: 2,
-        81: "64",
-        83: "2019118695",
-        85: 3,
-        86: "OpenGLES2",
-        87: 16383,
-        88: 4,
-        90: "Tunis",
-        91: "11",
-        92: 13564,
-        93: "android",
-        94: "KqsHTymw5/5GB23YGniUYN2/q47GATrq7eFeRatf0NkwLKEMQ0PK5BKEk72dPflAxUlEBir6Vtey83XqF593qsl8hwY=",
-        95: 110009,
-        97: 1,
-        98: 1,
-        99: "4",
-        100: "4",
-        102: b'\x10\x01D@W\r\x04\x01\x18S[AYYD\t\x16lYY\\x06\x04(RPw[V\x08;\x0eS8'
-    }
-    return BuildProto(payload)
-
-def MajorLogin(proto_data):
-    """إرسال طلب التسجيل الرئيسي والحصول على التوكن الكامل"""
-    headers = {
-        "Authorization": "Bearer",
-        "Connection": "Keep-Alive",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Host": HOST,
-        "ReleaseVersion": OB_VERSION,
-        "User-Agent": UA,
-        "X-GA": "v1 1",
-        "X-Unity-Version": "2018.4.11f1"
-    }
-    encrypted_data = EncodePyl(proto_data)
-    response = requests.post(
-        f"https://{HOST}/MajorLogin",
-        headers=headers,
-        data=encrypted_data,
-        verify=False,
-        timeout=10
-    )
-    return response
-
-def get_final_token(uid, password):
-    """الحصول على التوكن النهائي الكامل باستخدام الطريقة الجديدة"""
+def get_garena_token(uid, password):
+    """جلب التوكن من Garena"""
     try:
-        # الخطوة 1: جلب التوكن من Garena
-        token_data = GetToken(uid, password)
+        url = "https://100067.connect.garena.com/oauth/guest/token/grant"
+        headers = {
+            "Host": "100067.connect.garena.com",
+            "User-Agent": "GarenaMSDK/4.0.19P4(G011A ;Android 9;en;US;)",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "close",
+        }
+        data = {
+            "uid": uid,
+            "password": password,
+            "response_type": "token",
+            "client_type": "2",
+            "client_secret": "",
+            "client_id": "100067",
+        }
         
-        if "data" not in token_data:
-            print("Failed to get token from Garena")
+        response = requests.post(url, headers=headers, data=data, timeout=10)
+        response_data = response.json()
+        
+        if "access_token" in response_data and "open_id" in response_data:
+            return {
+                'access_token': response_data['access_token'],
+                'open_id': response_data['open_id']
+            }
+        else:
             return None
             
-        access_token = token_data["data"]["access_token"]
-        open_id = token_data["data"]["open_id"]
-        
-        # الخطوة 2: بناء رسالة Protobuf للتسجيل
-        proto_data = BuildLogin(open_id, access_token)
-        
-        # الخطوة 3: إرسال طلب التسجيل الرئيسي
-        response = MajorLogin(proto_data)
-        
-        # الخطوة 4: تحليل الاستجابة باستخدام Protobuf
-        parsed_data = ParseProto(response.content)
-        
-        # استخراج التوكن من الحقل 8
-        result = parsed_data.get("8")
-        
-        if result is None:
-            print("Token not found in response")
-            return None
-            
-        # تحويل إلى نص إذا كان bytes
-        if isinstance(result, bytes):
-            result = result.decode("utf-8", errors="replace")
-            
-        return result
-        
     except Exception as e:
-        print(f"Error getting final token: {e}")
         return None
 
-# ========== Main API Routes ==========
+def TOKEN_MAKER(OLD_ACCESS_TOKEN, NEW_ACCESS_TOKEN, OLD_OPEN_ID, NEW_OPEN_ID, uid):
+    """إنشاء التوكن النهائي"""
+    try:
+        now = datetime.now()
+        now = str(now)[:len(str(now)) - 7]
+        data = bytes.fromhex('3a07312e3131382e32aa01026172b201203838656362666563643661636466633261646664633564323032323632663364ba010134ea014062613536623334653466373266323066353732386436653964386262666461393730323865613930393163616334636438313464313063656436616632383632ca032037343238623235336465666331363430313863363034613165626266656264669a060134a2060134')
+        
+        data = data.replace(OLD_OPEN_ID.encode(), NEW_OPEN_ID.encode())
+        data = data.replace(OLD_ACCESS_TOKEN.encode(), NEW_ACCESS_TOKEN.encode())
+        d = encrypt_api(data.hex())
+        Final_Payload = bytes.fromhex(d)
+        
+        headers = {
+            "Host": "loginbp.ggblueshark.com",
+            "X-Unity-Version": "2018.4.11f1",
+            "Accept": "*/*",
+            "Authorization": "Bearer",
+            "ReleaseVersion": "OB54",
+            "X-GA": "v1 1",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": str(len(Final_Payload)),
+            "User-Agent": "Free%20Fire/2019118692 CFNetwork/3826.500.111.2.2 Darwin/24.4.0",
+            "Connection": "keep-alive"
+        }
+        
+        URL = "https://loginbp.ggblueshark.com/MajorLogin"
+        RESPONSE = requests.post(URL, headers=headers, data=Final_Payload, verify=False, timeout=10)
+        
+        if RESPONSE.status_code == 200:
+            if len(RESPONSE.text) < 10:
+                return None
+                
+            BASE64_TOKEN = RESPONSE.text[RESPONSE.text.find("eyJhbGciOiJIUzI1NiIsInN2ciI6IjEiLCJ0eXAiOiJKV1QifQ"):-1]
+            second_dot_index = BASE64_TOKEN.find(".", BASE64_TOKEN.find(".") + 1)
+            BASE64_TOKEN = BASE64_TOKEN[:second_dot_index + 44]
+            return BASE64_TOKEN
+        else:
+            return None
+            
+    except Exception as e:
+        return None
 
+def get_final_token(uid, password):
+    """الحصول على التوكن النهائي للحساب"""
+    try:
+        # الحصول على التوكن من Garena
+        garena_data = get_garena_token(uid, password)
+        if not garena_data:
+            return None
+            
+        NEW_ACCESS_TOKEN = garena_data['access_token']
+        NEW_OPEN_ID = garena_data['open_id']
+        
+        # التوكنات القديمة الثابتة
+        OLD_ACCESS_TOKEN = "a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4e5f67890"
+        OLD_OPEN_ID = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        
+        # إنشاء التوكن النهائي
+        final_token = TOKEN_MAKER(OLD_ACCESS_TOKEN, NEW_ACCESS_TOKEN, OLD_OPEN_ID, NEW_OPEN_ID, uid)
+        return final_token
+        
+    except Exception as e:
+        return None
+
+# ========== Main API Route ==========
 @app.route('/update_bio', methods=['GET'])
 def update_bio():
-    """API لتغيير البايو لحساب واحد"""
+    """
+    API لتغيير البايو لحساب واحد
+    
+    المعاملات المطلوبة:
+    - uid: معرف الحساب
+    - password: كلمة المرور
+    - bio: البايو الجديد
+    
+    مثال:
+    /update_bio?uid=4311549098&password=BNGX_IP6XZZPJIT5&bio=Hello+World
+    """
     try:
+        # الحصول على المعاملات من الرابط
         uid = request.args.get('uid')
         password = request.args.get('password')
         bio = request.args.get('bio')
         
+        # التحقق من وجود جميع المعاملات المطلوبة
         if not uid or not password or not bio:
             return jsonify({
                 'status': 'error',
@@ -306,8 +200,10 @@ def update_bio():
                 'example': '/update_bio?uid=4311549098&password=BNGX_IP6XZZPJIT5&bio=Hello+World'
             }), 400
         
+        # فك تشفير البايو إذا كان مشفرًا URL
         bio = urllib.parse.unquote(bio)
         
+        # التحقق من طول البايو (بدون الألوان)
         length_info = validate_bio_length(bio)
         
         if not length_info['is_valid']:
@@ -326,22 +222,27 @@ def update_bio():
                 'message': 'Failed to get authentication token'
             }), 401
         
-        # بناء رسالة Protobuf للتحديث
+        # إنشاء رسالة Protobuf
         data_msg = Data()
         data_msg.field_2 = 17
         data_msg.field_5.CopyFrom(EmptyMessage())
         data_msg.field_6.CopyFrom(EmptyMessage())
-        data_msg.field_8 = bio
+        data_msg.field_8 = bio  # إرسال البايو الكامل مع الألوان
         data_msg.field_9 = 1
         data_msg.field_11.CopyFrom(EmptyMessage())
         data_msg.field_12.CopyFrom(EmptyMessage())
 
         # تشفير البيانات
         data_bytes = data_msg.SerializeToString()
-        encrypted_data = encrypt_update(data_bytes)
+        padded_data = pad(data_bytes, AES.block_size)
+        
+        key = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
+        iv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        encrypted_data = cipher.encrypt(padded_data)
 
-        # إرسال طلب التحديث
-        url = "https://clientbp.ggblueshark.com/UpdateSocialBasicInfo"
+        # إرسال الطلب لتغيير البايو
+        url = "https://clientbp.ggpolarbear.com/UpdateSocialBasicInfo"
         headers = {
             'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)',
             'Connection': 'Keep-Alive',
@@ -349,7 +250,7 @@ def update_bio():
             'Authorization': f'Bearer {token}',
             'X-Unity-Version': '2018.4.11f1',
             'X-GA': 'v1 1',
-            'ReleaseVersion': OB_VERSION,
+            'ReleaseVersion': 'OB54',
             'Content-Type': 'application/octet-stream',
         }
 
@@ -381,7 +282,16 @@ def update_bio():
 
 @app.route('/get_token', methods=['GET'])
 def get_token_api():
-    """API لجلب التوكن الكامل باستخدام الطريقة الجديدة"""
+    """
+    API لجلب التوكن فقط
+    
+    المعاملات المطلوبة:
+    - uid: معرف الحساب
+    - password: كلمة المرور
+    
+    مثال:
+    /get_token?uid=4311549098&password=BNGX_IP6XZZPJIT5
+    """
     try:
         uid = request.args.get('uid')
         password = request.args.get('password')
@@ -400,8 +310,7 @@ def get_token_api():
                 'status': 'success',
                 'uid': uid,
                 'token': token,
-                'token_length': len(token),
-                'message': 'Token generated successfully using new method'
+                'message': 'Token generated successfully'
             })
         else:
             return jsonify({
@@ -418,7 +327,15 @@ def get_token_api():
 
 @app.route('/check_bio', methods=['GET'])
 def check_bio():
-    """API للتحقق من صحة البايو فقط"""
+    """
+    API للتحقق من صحة البايو فقط (بدون تغييره)
+    
+    المعاملات المطلوبة:
+    - bio: البايو المطلوب التحقق منه
+    
+    مثال:
+    /check_bio?bio=[FF0000]Hello[FFFFFF]World
+    """
     try:
         bio = request.args.get('bio')
         
@@ -450,9 +367,8 @@ def home():
     """الصفحة الرئيسية مع توثيق API"""
     return jsonify({
         'api_name': 'FreeFire Bio Changer API',
-        'version': '3.0',
+        'version': '1.0',
         'author': 'BNGX',
-        'token_method': 'NEW (Full Token via Protobuf Parse)',
         'endpoints': [
             {
                 'endpoint': '/update_bio',
@@ -465,7 +381,7 @@ def home():
                 'endpoint': '/get_token',
                 'method': 'GET',
                 'parameters': ['uid', 'password'],
-                'description': 'جلب التوكن الكامل (طريقة جديدة)',
+                'description': 'جلب التوكن فقط',
                 'example': '/get_token?uid=4311549098&password=BNGX_IP6XZZPJIT5'
             },
             {
@@ -479,26 +395,24 @@ def home():
         'notes': [
             'يدعم علامات الألوان مثل [FF0000] ولا تحسب في عدد الأحرف',
             'الحد الأقصى 180 حرف بدون الألوان',
-            'البايو يجب أن يكون مشفر URL (URL encoded)',
-            'طريقة جلب التوكن جديدة تستخدم ParseProto لاستخراج التوكن الكامل'
+            'البايو يجب أن يكون مشفر URL (URL encoded)'
         ]
     })
 
+# ========== Main Function ==========
 if __name__ == '__main__':
     print("=" * 60)
-    print("🚀 FreeFire Bio Changer API V3 (طريقة جلب توكن كاملة)")
+    print("🚀 FreeFire Bio Changer API (مع دعم الألوان)")
     print("=" * 60)
     print(f"🌐 Server URL: http://localhost:65450")
-    print(f"📱 Version: {OB_VERSION}")
-    print(f"🔄 Token Method: NEW (Full Token via Protobuf Parse)")
     print(f"🎨 يدعم علامات الألوان ولا يحسبها في الطول")
     print("\n🔗 الطرق المتاحة:")
     print("  GET  /                      - توثيق API")
     print("  GET  /update_bio            - تغيير البايو لحساب واحد")
-    print("  GET  /get_token             - جلب التوكن الكامل (طريقة جديدة)")
+    print("  GET  /get_token             - جلب التوكن فقط")
     print("  GET  /check_bio             - التحقق من صحة البايو")
     print("\n📖 مثال الاستخدام:")
     print("  http://localhost:65450/update_bio?uid=4311549098&password=BNGX_IP6XZZPJIT5&bio=%5BFF0000%5DHello%5BFFFFFF%5DWorld")
     print("=" * 60)
     
-    app.run(host='0.0.0.0', port=65450, debug=False)
+    app.run(host='0.0.0.0', port=1041, debug=False)

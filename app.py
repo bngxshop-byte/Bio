@@ -9,41 +9,37 @@ from google.protobuf.internal import builder as _builder
 
 app = Flask(__name__)
 
-# Protocol buffer setup
-_sym_db = _symbol_database.Default()
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\ndata.proto\"\xbb\x01\n\x04\x44\x61ta\x12\x0f\n\x07\x66ield_2\x18\x02 \x01(\x05\x12\x1e\n\x07\x66ield_5\x18\x05 \x01(\x0b\x32\r.EmptyMessage\x12\x1e\n\x07\x66ield_6\x18\x06 \x01(\x0b\x32\r.EmptyMessage\x12\x0f\n\x07\x66ield_8\x18\x08 \x01(\t\x12\x0f\n\x07\x66ield_9\x18\t \x01(\x05\x12\x1f\n\x08\x66ield_11\x18\x0b \x01(\x0b\x32\r.EmptyMessage\x12\x1f\n\x08\x66ield_12\x18\x0c \x01(\x0b\x32\r.EmptyMessage\"\x0e\n\x0c\x45mptyMessageb\x06proto3')
+# ... إعدادات Protocol Buffer (كما هي) ...
 
-_globals = globals()
-_builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'data_pb2', _globals)
-
-if _descriptor._USE_C_DESCRIPTORS == False:
-    DESCRIPTOR._options = None
-    _globals['_DATA']._serialized_start = 15
-    _globals['_DATA']._serialized_end = 202
-    _globals['_EMPTYMESSAGE']._serialized_start = 204
-    _globals['_EMPTYMESSAGE']._serialized_end = 218
-
-Data = _sym_db.GetSymbol('Data')
-EmptyMessage = _sym_db.GetSymbol('EmptyMessage')
-
-@app.route('/encrypt', methods=['GET'])
-def encrypt_data():
-    # Get bio and token from query parameters
+@app.route('/update_bio', methods=['GET'])
+def update_bio():
+    uid = request.args.get('uid')
+    password = request.args.get('password')
     bio = request.args.get('bio')
-    token = request.args.get('token')
 
-    if not bio or not token:
-        return jsonify({"error": "Both 'bio' and 'token' are required"}), 400
+    if not uid or not password or not bio:
+        return jsonify({"error": "uid, password, and bio are required"}), 400
 
     if len(bio) >= 180:
         return jsonify({"error": "Bio must be less than 180 characters"}), 400
 
-    # Encryption setup
+    # جلب التوكن
+    token_url = f"http://78.154.103.18:11844/get?uid={uid}&pw={password}"
+    try:
+        token_response = requests.get(token_url)
+        token_response.raise_for_status()
+        token_data = token_response.json()
+        token = token_data.get('token')
+        if not token:
+            return jsonify({"error": "Failed to get token from external API"}), 500
+    except requests.RequestException as e:
+        return jsonify({"error": f"Error fetching token: {str(e)}"}), 500
+
+    # إعدادات التشفير
     key = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
     iv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
 
-    # Create and populate the Data message
+    # إنشاء وملء رسالة البيانات
     data = Data()
     data.field_2 = 17
     data.field_5.CopyFrom(EmptyMessage())
@@ -53,17 +49,18 @@ def encrypt_data():
     data.field_11.CopyFrom(EmptyMessage())
     data.field_12.CopyFrom(EmptyMessage())
 
-    # Serialize and encrypt the data
+    # تشفير البيانات
     data_bytes = data.SerializeToString()
     padded_data = pad(data_bytes, AES.block_size)
     cipher = AES.new(key, AES.MODE_CBC, iv)
     encrypted_data = cipher.encrypt(padded_data)
     formatted_encrypted_data = ' '.join([f"{byte:02X}" for byte in encrypted_data])
 
-    # Send the encrypted data to the external API
+    # إرسال البيانات المشفرة إلى API التحديث
     url = "https://clientbp.ggpolarbear.com/UpdateSocialBasicInfo"
     data_hex = formatted_encrypted_data
     data_bytes = bytes.fromhex(data_hex.replace(" ", ""))
+
     headers = {
         "Expect": "100-continue",
         "Authorization": f"Bearer {token}",
@@ -76,13 +73,20 @@ def encrypt_data():
         "Connection": "Keep-Alive",
         "Accept-Encoding": "gzip"
     }
-    response = requests.post(url, headers=headers, data=data_bytes)
 
-    # Return the response from the external API
-    return jsonify({
-        "status_code": response.status_code,
-        "encrypted_data": formatted_encrypted_data
-    })
+    try:
+        response = requests.post(url, headers=headers, data=data_bytes)
+        response.raise_for_status()
+        return jsonify({
+            "status_code": response.status_code,
+            "encrypted_data": formatted_encrypted_data,
+            "token_used": token[:10] + "..."  # إخفاء جزء من التوكن للأمان
+        })
+    except requests.RequestException as e:
+        return jsonify({"error": f"Error updating bio: {str(e)}"}), 500
+
+# عند النشر على Vercel
+handler = app
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

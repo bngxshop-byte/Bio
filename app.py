@@ -61,7 +61,7 @@ def encrypt_data():
     formatted_encrypted_data = ' '.join([f"{byte:02X}" for byte in encrypted_data])
 
     # Send the encrypted data to the external API
-    url = "https://clientbp.ggblueshark.com/UpdateSocialBasicInfo"
+    url = "https://clientbp.ggpolarbear.com/UpdateSocialBasicInfo"
     data_hex = formatted_encrypted_data
     data_bytes = bytes.fromhex(data_hex.replace(" ", ""))
     headers = {
